@@ -346,11 +346,11 @@ class Trainer:
         self.set_train()
 
     def distance_line_point(self, points, lines):
-        """Given the line l and point x, compute the distance between x 
+        """Given the line l and point x, compute the distance between x
         and l.
         """
         assert points.shape[-1] == 3 , "Please provide homogeneous coordinates"
-        
+
         dot_prod = torch.sum(points * lines, dim = -1, keepdim = True)
         distance = dot_prod/torch.linalg.norm(lines, dim = -1, keepdim = True)
 
@@ -440,11 +440,14 @@ class Trainer:
                         inputs[("color", frame_id, source_scale)]
 
                 if self.opt.load_corresp:
+                    h, w = inputs[("color", frame_id, scale)].shape[1:]
+                    denorm = lambda x: (x + 1) * torch.Tensor([[[w, h]]]).to(x.device) / 2
+
                     P_ = torch.matmul(inputs[("K", source_scale)], T)[:, :3, :]
-                    points1 = torch.cat(correspondences[('points1', source_scale, frame_id)]).to(P_.device)
-                    points2 = torch.cat(correspondences[('points2', source_scale, frame_id)]).to(P_.device)
-                    
-                    outputs[("epipolar_loss", frame_id, source_scale)] = self.compute_epipolar_loss(points1, points2, P_)
+                    points1 = denorm(torch.cat(correspondences[('points1', 0, frame_id)])).to(P_.device)
+                    points2 = denorm(torch.cat(correspondences[('points2', 0, frame_id)])).to(P_.device)
+
+                    outputs[("epipolar_loss", frame_id, scale)] = self.compute_epipolar_loss(points1, points2, P_)
 
     def compute_reprojection_loss(self, pred, target):
         """Computes reprojection loss between a batch of predicted and target images
@@ -539,14 +542,13 @@ class Trainer:
                     idxs > identity_reprojection_loss.shape[1] - 1).float()
 
             loss += to_optimise.mean()
-            # print("to_optimise loss", to_optimise.mean())
 
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)
             smooth_loss = get_smooth_loss(norm_disp, color)
 
             if self.opt.load_corresp:
-                loss += outputs[("epipolar_loss", frame_id, source_scale)]
+                loss += outputs[("epipolar_loss", frame_id, scale)]
                 # print("epipolar loss", outputs[("epipolar_loss", frame_id, source_scale)] )
                 losses["loss/epipolar_loss_{}".format(scale)] = outputs[("epipolar_loss", frame_id, source_scale)]
 

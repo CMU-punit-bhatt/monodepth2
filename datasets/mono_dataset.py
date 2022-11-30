@@ -60,7 +60,7 @@ class MonoDataset(data.Dataset):
             for i in range(len(corresp_dict[dict_keys[img]])):
                 corresp_dict[dict_keys[img]][i] = corresp_dict[dict_keys[img]][i][:, :min_corresp, :]
                 corresp_dict[dict_keys[img + 1]][i] = corresp_dict[dict_keys[img]][i][:, :min_corresp, :]
-            
+
         return default_collate(batch), corresp_dict
 
 
@@ -185,6 +185,7 @@ class MonoDataset(data.Dataset):
 
         line = self.filenames[index].split()
         folder = line[0]
+        sync_file = folder.split('/')[-1]
 
         if len(line) == 3:
             frame_index = int(line[1])
@@ -234,8 +235,8 @@ class MonoDataset(data.Dataset):
             image_t_prev = self.to_image(inputs[("color", -1, 0)])
             image_t_next = self.to_image(inputs[("color", 1, 0)])
 
-            key1 = (index, frame_index - 1, frame_index)
-            key2 = (index, frame_index, frame_index + 1)
+            key1 = (sync_file, frame_index - 1, frame_index)
+            key2 = (sync_file, frame_index, frame_index + 1)
 
             corresp_prev_t = self.corresp_dict.try_get(key1, image_t_prev, image_t)
             corresp_t_next = self.corresp_dict.try_get(key2, image_t, image_t_next)
