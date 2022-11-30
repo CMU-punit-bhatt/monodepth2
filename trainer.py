@@ -209,7 +209,7 @@ class Trainer:
 
             before_op_time = time.time()
 
-            outputs, losses = self.process_batch(inputs)
+            outputs, losses = self.process_batch(inputs, correspondences)
 
             self.model_optimizer.zero_grad()
             losses["loss"].backward()
@@ -232,7 +232,7 @@ class Trainer:
 
             self.step += 1
 
-    def process_batch(self, inputs):
+    def process_batch(self, inputs, correspondences):
         """Pass a minibatch through the network and generate images and losses
         """
         for key, ipt in inputs.items():
@@ -261,7 +261,7 @@ class Trainer:
         if self.use_pose_net:
             outputs.update(self.predict_poses(inputs, features))
 
-        self.generate_images_pred(inputs, outputs)
+        self.generate_images_pred(inputs, outputs, correspondences)
         losses = self.compute_losses(inputs, outputs)
 
         return outputs, losses
@@ -335,7 +335,7 @@ class Trainer:
             inputs, correspondences = self.val_iter.next()
 
         with torch.no_grad():
-            outputs, losses = self.process_batch(inputs)
+            outputs, losses = self.process_batch(inputs, correspondences)
 
             if "depth_gt" in inputs:
                 self.compute_depth_losses(inputs, outputs, losses)
@@ -349,41 +349,45 @@ class Trainer:
         """Given the line l and point x, compute the distance between x 
         and l.
         """
-        if points.shape[-1] < 3:
-            # Convert to homogeneous coordinates
-            points = np.concatenate([points, np.ones((points.shape[0], 1))], axis = -1)
+        assert points.shape[-1] == 3 , "Please provide homogeneous coordinates"
         
-        dot_prod = np.sum(points * lines, axis = -1, keepdims = True)
-        distance = dot_prod/np.linalg.norm(lines, axis = -1, keepdims = True)
+        dot_prod = torch.sum(points * lines, dim = -1, keepdim = True)
+        distance = dot_prod/torch.linalg.norm(lines, dim = -1, keepdim = True)
 
         return abs(distance)
 
     def compute_epipolar_loss(self, x1, x2, P_):
         """Given the 2D correspondences, compute the total loss.
         """
+        device = P_.device
         # P_: [N, 3, 4]
         # x1, x2: [N, P, 2]
         N = P_.shape[0]
-        
         # epipole: [N, 3]
         epipole = torch.cat([P_[:,0,3, None], P_[:,1,3, None], P_[:,2,3, None]], axis = 1)
-        n_zeros = torch.zeros([N,1]).to(P_.device)
-        e_cross = np.array([n_zeros, - epipole[:,2, None], epipole[:,1, None], epipole[:,2, None], n_zeros, - epipole[:,0, None], - epipole[:,1, None], epipole[:,0, None], n_zeros])
+        n_zeros = torch.zeros([N,1]).to(device)
+        e_cross = torch.cat([n_zeros, - epipole[:,2, None], epipole[:,1, None], epipole[:,2, None], n_zeros, - epipole[:,0, None], - epipole[:,1, None], epipole[:,0, None], n_zeros], axis= 1)
         e_cross = e_cross.reshape((-1, 3,3))
 
         # P_inv: [N,4,3]
-        P_inv = torch.Tensor([[1,0,0],[0,1,0],[0,0,1],[0,0,0]]).unsqueeze(axis=0).to(P_.device)
+        P_inv = torch.Tensor([[1,0,0],[0,1,0],[0,0,1],[0,0,0]]).unsqueeze(axis=0).to(device)
         P_inv = P_inv.repeat(N,1,1)
 
         line_matrix = e_cross @ P_ @ P_inv
 
-        lines = line_matrix @ x2.T
+        # homogeneous corrdinates for x2
+        num_corresp = x2.shape[1]
+        nzeros = torch.ones((N,num_corresp,1)).to(device)
+        x1 = torch.cat([x1, nzeros], axis = -1)
+        x2 = torch.cat([x2, nzeros], axis = -1)
+        lines = line_matrix @ x2.permute((0, 2, 1)).float()
+        lines = lines.permute((0, 2, 1))
 
-        loss = torch.sum(self.distance_line_point(x1, lines))
+        loss = torch.mean(self.distance_line_point(x1, lines))
 
         return loss
 
-    def generate_images_pred(self, inputs, outputs):
+    def generate_images_pred(self, inputs, outputs, correspondences):
         """Generate the warped (reprojected) color images for a minibatch.
         Generated images are saved into the `outputs` dictionary.
         """
@@ -435,10 +439,12 @@ class Trainer:
                     outputs[("color_identity", frame_id, scale)] = \
                         inputs[("color", frame_id, source_scale)]
 
-                import pdb;pdb.set_trace()
-                P_ = torch.matmul(inputs[("K", source_scale)], T)[:, :3, :]
-                self.compute_epipolar_loss(x1, x2, P_)
-
+                if self.opt.load_corresp:
+                    P_ = torch.matmul(inputs[("K", source_scale)], T)[:, :3, :]
+                    points1 = torch.cat(correspondences[('points1', source_scale, frame_id)]).to(P_.device)
+                    points2 = torch.cat(correspondences[('points2', source_scale, frame_id)]).to(P_.device)
+                    
+                    outputs[("epipolar_loss", frame_id, source_scale)] = self.compute_epipolar_loss(points1, points2, P_)
 
     def compute_reprojection_loss(self, pred, target):
         """Computes reprojection loss between a batch of predicted and target images
@@ -507,6 +513,7 @@ class Trainer:
                 # add a loss pushing mask to 1 (using nn.BCELoss for stability)
                 weighting_loss = 0.2 * nn.BCELoss()(mask, torch.ones(mask.shape).cuda())
                 loss += weighting_loss.mean()
+                # print("weighting_loss", weighting_loss.mean())
 
             if self.opt.avg_reprojection:
                 reprojection_loss = reprojection_losses.mean(1, keepdim=True)
@@ -532,12 +539,20 @@ class Trainer:
                     idxs > identity_reprojection_loss.shape[1] - 1).float()
 
             loss += to_optimise.mean()
+            # print("to_optimise loss", to_optimise.mean())
 
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)
             smooth_loss = get_smooth_loss(norm_disp, color)
 
+            if self.opt.load_corresp:
+                loss += outputs[("epipolar_loss", frame_id, source_scale)]
+                # print("epipolar loss", outputs[("epipolar_loss", frame_id, source_scale)] )
+                losses["loss/epipolar_loss_{}".format(scale)] = outputs[("epipolar_loss", frame_id, source_scale)]
+
             loss += self.opt.disparity_smoothness * smooth_loss / (2 ** scale)
+            # print("disparity smooth loss", self.opt.disparity_smoothness * smooth_loss / (2 ** scale))
+
             total_loss += loss
             losses["loss/{}".format(scale)] = loss
 

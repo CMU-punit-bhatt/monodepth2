@@ -15,7 +15,7 @@ from PIL import Image  # using pillow-simd for increased speed
 import torch
 import torch.utils.data as data
 from torchvision import transforms
-from torch.utils.data import default_collate
+from torch.utils.data.dataloader  import default_collate
 
 from caching_dictionary import CachingDictionary
 
@@ -50,6 +50,17 @@ class MonoDataset(data.Dataset):
                 corresp_dict[k].append(inp[k])
                 del inp[k]
 
+        # create equal sized batch
+        min_corresp = 1000
+        dict_keys = list(corresp_dict.keys())
+        for img in (0,2):
+            for i in range(len(corresp_dict[dict_keys[img]])):
+                min_corresp = min(min_corresp, corresp_dict[dict_keys[img]][i].shape[1])
+
+            for i in range(len(corresp_dict[dict_keys[img]])):
+                corresp_dict[dict_keys[img]][i] = corresp_dict[dict_keys[img]][i][:, :min_corresp, :]
+                corresp_dict[dict_keys[img + 1]][i] = corresp_dict[dict_keys[img]][i][:, :min_corresp, :]
+            
         return default_collate(batch), corresp_dict
 
 
@@ -217,14 +228,14 @@ class MonoDataset(data.Dataset):
             inputs["depth_gt"] = np.expand_dims(depth_gt, 0)
             inputs["depth_gt"] = torch.from_numpy(inputs["depth_gt"].astype(np.float32))
 
-        # Doing this in native resolution and then normalizing the values.
+        # Doing this in (source scale) resolution and then normalizing the values.
         if self.load_corresp:
-            image_t = self.to_image(inputs[("color", 0, -1)])
-            image_t_prev = self.to_image(inputs[("color", -1, -1)])
-            image_t_next = self.to_image(inputs[("color", 1, -1)])
+            image_t = self.to_image(inputs[("color", 0, 0)])
+            image_t_prev = self.to_image(inputs[("color", -1, 0)])
+            image_t_next = self.to_image(inputs[("color", 1, 0)])
 
-            key1 = (frame_index - 1, frame_index)
-            key2 = (frame_index, frame_index + 1)
+            key1 = (index, frame_index - 1, frame_index)
+            key2 = (index, frame_index, frame_index + 1)
 
             corresp_prev_t = self.corresp_dict.try_get(key1, image_t_prev, image_t)
             corresp_t_next = self.corresp_dict.try_get(key2, image_t, image_t_next)
