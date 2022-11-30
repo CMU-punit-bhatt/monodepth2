@@ -6,6 +6,7 @@
 
 from __future__ import absolute_import, division, print_function
 
+import cv2
 import os
 import skimage.transform
 import numpy as np
@@ -83,6 +84,44 @@ class KITTIRAWDataset(KITTIDataset):
             depth_gt = np.fliplr(depth_gt)
 
         return depth_gt
+
+    def load_correspondences(self, image1, image2):
+        img1 = cv2.cvtColor(np.array(image1), cv2.COLOR_RGB2GRAY)
+        img2 = cv2.cvtColor(np.array(image2), cv2.COLOR_RGB2GRAY)
+
+        assert img1.shape == img2.shape, 'Are you serious?'
+
+        h, w = img1.shape[0], img2.shape[1]
+
+        sift = cv2.SIFT_create()
+        kp1, des1 = sift.detectAndCompute(img1,None)
+        kp2, des2 = sift.detectAndCompute(img2,None)
+
+        bf = cv2.BFMatcher()
+        matches = bf.knnMatch(des1, des2, k=2)
+
+        # Apply ratio test
+        good = []
+
+        for m,n in matches:
+            if m.distance < 0.75*n.distance:
+                good.append(m)
+
+        # Sorting by distance.
+        good.sort(key=lambda x: x.distance)
+
+        # Which one is query and which one is train.
+        # https://github.com/opencv/opencv/blob/4.x/modules/features2d/src/draw.cpp#L239
+        points1 = np.asarray([kp1[match.queryIdx].pt for match in good])
+        points2 = np.asarray([kp2[match.trainIdx].pt for match in good])
+
+        # Normalize values
+        min_max = lambda x: 2 * x / np.array([[w, h]]) - 1
+
+        norm_points1 = min_max(points1)
+        norm_points2 = min_max(points2)
+
+        return norm_points1, norm_points2
 
 
 class KITTIOdomDataset(KITTIDataset):

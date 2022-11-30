@@ -5,6 +5,7 @@ __pycache__
 *.npz
 kitti_data
 models
+**/.vscode
 parallel
 parallel-20221122
 assets
