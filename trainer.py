@@ -188,6 +188,7 @@ class Trainer:
         for self.epoch in range(self.opt.num_epochs):
             self.run_epoch()
             if (self.epoch + 1) % self.opt.save_frequency == 0:
+                print("saving model at epoch {}".format(self.epoch))
                 self.save_model()
 
     def run_epoch(self):
@@ -338,6 +339,44 @@ class Trainer:
 
         self.set_train()
 
+    def distance_line_point(self, points, lines):
+        """Given the line l and point x, compute the distance between x 
+        and l.
+        """
+        if points.shape[-1] < 3:
+            # Convert to homogeneous coordinates
+            points = np.concatenate([points, np.ones((points.shape[0], 1))], axis = -1)
+        
+        dot_prod = np.sum(points * lines, axis = -1, keepdims = True)
+        distance = dot_prod/np.linalg.norm(lines, axis = -1, keepdims = True)
+
+        return abs(distance)
+
+    def compute_epipolar_loss(self, x1, x2, P_):
+        """Given the 2D correspondences, compute the total loss.
+        """
+        # P_: [N, 3, 4]
+        # x1, x2: [N, P, 2]
+        N = P_.shape[0]
+        
+        # epipole: [N, 3]
+        epipole = torch.cat([P_[:,0,3, None], P_[:,1,3, None], P_[:,2,3, None]], axis = 1)
+        n_zeros = torch.zeros([N,1]).to(P_.device)
+        e_cross = np.array([n_zeros, - epipole[:,2, None], epipole[:,1, None], epipole[:,2, None], n_zeros, - epipole[:,0, None], - epipole[:,1, None], epipole[:,0, None], n_zeros])
+        e_cross = e_cross.reshape((-1, 3,3))
+
+        # P_inv: [N,4,3]
+        P_inv = torch.Tensor([[1,0,0],[0,1,0],[0,0,1],[0,0,0]]).unsqueeze(axis=0).to(P_.device)
+        P_inv = P_inv.repeat(N,1,1)
+
+        line_matrix = e_cross @ P_ @ P_inv
+
+        lines = line_matrix @ x2.T
+
+        loss = torch.sum(self.distance_line_point(x1, lines))
+
+        return loss
+
     def generate_images_pred(self, inputs, outputs):
         """Generate the warped (reprojected) color images for a minibatch.
         Generated images are saved into the `outputs` dictionary.
@@ -389,6 +428,11 @@ class Trainer:
                 if not self.opt.disable_automasking:
                     outputs[("color_identity", frame_id, scale)] = \
                         inputs[("color", frame_id, source_scale)]
+
+                import pdb;pdb.set_trace()
+                P_ = torch.matmul(inputs[("K", source_scale)], T)[:, :3, :]
+                self.compute_epipolar_loss(x1, x2, P_)
+
 
     def compute_reprojection_loss(self, pred, target):
         """Computes reprojection loss between a batch of predicted and target images

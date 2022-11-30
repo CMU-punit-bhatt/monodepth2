@@ -5,3 +5,7 @@ __pycache__
 *.npz
 kitti_data
 models
+parallel
+parallel-20221122
+assets
+checkpoints
