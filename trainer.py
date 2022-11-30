@@ -14,6 +14,11 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
+from torchvision import transforms
+
+import PIL.Image as pil
+import matplotlib as mpl
+import matplotlib.cm as cm
 
 import json
 
@@ -366,7 +371,16 @@ class Trainer:
         # epipole: [N, 3]
         epipole = torch.cat([P_[:,0,3, None], P_[:,1,3, None], P_[:,2,3, None]], axis = 1)
         n_zeros = torch.zeros([N,1]).to(device)
-        e_cross = torch.cat([n_zeros, - epipole[:,2, None], epipole[:,1, None], epipole[:,2, None], n_zeros, - epipole[:,0, None], - epipole[:,1, None], epipole[:,0, None], n_zeros], axis= 1)
+        e_cross = torch.cat([
+                n_zeros, - epipole[:,2, None],
+                epipole[:,1, None],
+                epipole[:,2, None],
+                n_zeros, - epipole[:,0, None],
+                - epipole[:,1, None],
+                epipole[:,0, None],
+                n_zeros
+            ],
+            axis= 1)
         e_cross = e_cross.reshape((-1, 3,3))
 
         # P_inv: [N,4,3]
@@ -611,7 +625,7 @@ class Trainer:
         for l, v in losses.items():
             writer.add_scalar("{}".format(l), v, self.step)
 
-        for j in range(min(4, self.opt.batch_size)):  # write a maxmimum of four images
+        for j in range(min(10, self.opt.batch_size)):  # write a maxmimum of four images
             for s in self.opt.scales:
                 for frame_id in self.opt.frame_ids:
                     writer.add_image(
@@ -624,7 +638,15 @@ class Trainer:
 
                 writer.add_image(
                     "disp_{}/{}".format(s, j),
-                    normalize_image(outputs[("disp", s)][j]), self.step)
+                    self.get_magma_heatmap(outputs[("disp", s)][j]), self.step)
+
+                writer.add_image(
+                    "depth_{}/{}".format(s, j),
+                    normalize_image(outputs[("depth", 0, s)][j]), self.step)
+
+                writer.add_image(
+                    "depth_gt/{}".format(j),
+                    normalize_image(inputs[("depth_gt")][j]), self.step)
 
                 if self.opt.predictive_mask:
                     for f_idx, frame_id in enumerate(self.opt.frame_ids[1:]):
@@ -695,3 +717,13 @@ class Trainer:
             self.model_optimizer.load_state_dict(optimizer_dict)
         else:
             print("Cannot find Adam weights so Adam is randomly initialized")
+
+    def get_magma_heatmap(self, disp):
+        img = np.array(transforms.ToPILImage(disp.detach()))
+        vmax = np.percentile(img, 95)
+        normalizer = mpl.colors.Normalize(vmin=img.min(), vmax=vmax)
+        mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
+        colormapped_im = (mapper.to_rgba(img)[:, :, :3] * 255).astype(np.uint8)
+        im = pil.fromarray(colormapped_im)
+
+        return im
