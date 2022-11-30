@@ -15,7 +15,9 @@ from PIL import Image  # using pillow-simd for increased speed
 import torch
 import torch.utils.data as data
 from torchvision import transforms
+from torch.utils.data import default_collate
 
+from caching_dictionary import CachingDictionary
 
 def pil_loader(path):
     # open path as file to avoid ResourceWarning
@@ -26,18 +28,31 @@ def pil_loader(path):
 
 
 class MonoDataset(data.Dataset):
-    """Superclass for monocular dataloaders
+    """Superclass for monocular dataloaders"""
 
-    Args:
-        data_path
-        filenames
-        height
-        width
-        frame_idxs
-        num_scales
-        is_train
-        img_ext
-    """
+    @staticmethod
+    def collate_corresp(batch):
+        """Collates everything other than correspondences in default manner.
+        Correspondences are passed as list of points per key.
+        """
+        keys_of_interest = [
+            ('points1', 0, -1),
+            ('points2', 0, -1),
+            ('points1', 0, 1),
+            ('points2', 0, 1),
+        ]
+
+        corresp_dict = {k:[] for k in keys_of_interest}
+        for inp in batch:
+            for k in keys_of_interest:
+                if k not in inp.keys():
+                    continue
+                corresp_dict[k].append(inp[k])
+                del inp[k]
+
+        return default_collate(batch), corresp_dict
+
+
     def __init__(self,
                  data_path,
                  filenames,
@@ -46,7 +61,10 @@ class MonoDataset(data.Dataset):
                  frame_idxs,
                  num_scales,
                  is_train=False,
-                 img_ext='.jpg'):
+                 img_ext='.jpg',
+                 load_corresp=False,
+                 corresp_cache_path=None,
+                 corresp_n=-1):
         super(MonoDataset, self).__init__()
 
         self.data_path = data_path
@@ -63,6 +81,14 @@ class MonoDataset(data.Dataset):
 
         self.loader = pil_loader
         self.to_tensor = transforms.ToTensor()
+        self.to_image = transforms.ToPILImage()
+
+        # Adding SIFT feature information.
+        self.load_corresp = load_corresp
+        self.corresp_cache_path = corresp_cache_path
+        self.corresp_n = corresp_n
+
+        assert not load_corresp or corresp_cache_path is not None, 'Please improve!'
 
         # We need to specify augmentations differently in newer versions of torchvision.
         # We first try the newer tuple version; if this fails we fall back to scalars
@@ -86,6 +112,12 @@ class MonoDataset(data.Dataset):
                                                interpolation=self.interp)
 
         self.load_depth = self.check_depth()
+
+        if self.load_corresp:
+            self.corresp_dict = CachingDictionary(
+                self.corresp_cache_path,
+                self.load_correspondences,
+            )
 
     def preprocess(self, inputs, color_aug):
         """Resize colour images to the required scales and augment if required
@@ -173,21 +205,43 @@ class MonoDataset(data.Dataset):
             inputs[("inv_K", scale)] = torch.from_numpy(inv_K)
 
         if do_color_aug:
-            color_aug = transforms.ColorJitter.get_params(
+            color_aug = transforms.ColorJitter(
                 self.brightness, self.contrast, self.saturation, self.hue)
         else:
             color_aug = (lambda x: x)
 
         self.preprocess(inputs, color_aug)
 
-        for i in self.frame_idxs:
-            del inputs[("color", i, -1)]
-            del inputs[("color_aug", i, -1)]
-
         if self.load_depth:
             depth_gt = self.get_depth(folder, frame_index, side, do_flip)
             inputs["depth_gt"] = np.expand_dims(depth_gt, 0)
             inputs["depth_gt"] = torch.from_numpy(inputs["depth_gt"].astype(np.float32))
+
+        # Doing this in native resolution and then normalizing the values.
+        if self.load_corresp:
+            image_t = self.to_image(inputs[("color", 0, -1)])
+            image_t_prev = self.to_image(inputs[("color", -1, -1)])
+            image_t_next = self.to_image(inputs[("color", 1, -1)])
+
+            key1 = (frame_index - 1, frame_index)
+            key2 = (frame_index, frame_index + 1)
+
+            corresp_prev_t = self.corresp_dict.try_get(key1, image_t_prev, image_t)
+            corresp_t_next = self.corresp_dict.try_get(key2, image_t, image_t_next)
+
+            preproc_corresp = lambda x: self.to_tensor(
+                x if self.corresp_n == -1 else x[: self.corresp_n]
+            )
+
+            # (t, t - 1) and (t, t + 1)
+            inputs[('points1', 0, -1)] = preproc_corresp(corresp_prev_t[1])
+            inputs[('points2', 0, -1)] = preproc_corresp(corresp_prev_t[0])
+            inputs[('points1', 0, 1)] = preproc_corresp(corresp_t_next[0])
+            inputs[('points2', 0, 1)] = preproc_corresp(corresp_t_next[1])
+
+        for i in self.frame_idxs:
+            del inputs[("color", i, -1)]
+            del inputs[("color_aug", i, -1)]
 
         if "s" in self.frame_idxs:
             stereo_T = np.eye(4, dtype=np.float32)
@@ -206,4 +260,7 @@ class MonoDataset(data.Dataset):
         raise NotImplementedError
 
     def get_depth(self, folder, frame_index, side, do_flip):
+        raise NotImplementedError
+
+    def load_correspondences(self, image1, image2):
         raise NotImplementedError

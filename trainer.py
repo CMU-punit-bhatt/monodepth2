@@ -24,7 +24,7 @@ from layers import *
 import datasets
 import networks
 from IPython import embed
-
+from datasets.kitti_dataset import MonoDataset
 
 class Trainer:
     def __init__(self, options):
@@ -126,16 +126,22 @@ class Trainer:
 
         train_dataset = self.dataset(
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext)
+            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext,
+            load_corresp=self.opt.load_corresp, corresp_cache_path=self.opt.corresp_cache_path,
+            corresp_n=self.opt.corresp_n)
         self.train_loader = DataLoader(
             train_dataset, self.opt.batch_size, True,
-            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
+            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True,
+            collate_fn=MonoDataset.collate_corresp)
         val_dataset = self.dataset(
             self.opt.data_path, val_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext)
+            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext,
+            load_corresp=self.opt.load_corresp, corresp_cache_path=self.opt.corresp_cache_path,
+            corresp_n=self.opt.corresp_n)
         self.val_loader = DataLoader(
             val_dataset, self.opt.batch_size, True,
-            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
+            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True,
+            collate_fn=MonoDataset.collate_corresp)
         self.val_iter = iter(self.val_loader)
 
         self.writers = {}
@@ -198,7 +204,7 @@ class Trainer:
         print("Training")
         self.set_train()
 
-        for batch_idx, inputs in enumerate(self.train_loader):
+        for batch_idx, (inputs, correspondences) in enumerate(self.train_loader):
 
             before_op_time = time.time()
 
@@ -322,10 +328,10 @@ class Trainer:
         """
         self.set_eval()
         try:
-            inputs = self.val_iter.next()
+            inputs, correspondences = self.val_iter.next()
         except StopIteration:
             self.val_iter = iter(self.val_loader)
-            inputs = self.val_iter.next()
+            inputs, correspondences = self.val_iter.next()
 
         with torch.no_grad():
             outputs, losses = self.process_batch(inputs)
