@@ -440,7 +440,7 @@ class Trainer:
                         inputs[("color", frame_id, source_scale)]
 
                 if self.opt.load_corresp:
-                    h, w = inputs[("color", frame_id, scale)].shape[1:]
+                    h, w = inputs[("color", frame_id, scale)].shape[2:]
                     denorm = lambda x: (x + 1) * torch.Tensor([[[w, h]]]).to(x.device) / 2
 
                     P_ = torch.matmul(inputs[("K", source_scale)], T)[:, :3, :]
