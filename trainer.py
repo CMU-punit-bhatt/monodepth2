@@ -361,7 +361,7 @@ class Trainer:
 
         return abs(distance)
 
-    def compute_epipolar_loss(self, x1, x2, P_):
+    def compute_epipolar_loss(self, x1, x2, P_, K):
         """Given the 2D correspondences, compute the total loss.
         """
         device = P_.device
@@ -384,7 +384,8 @@ class Trainer:
         e_cross = e_cross.reshape((-1, 3,3))
 
         # P_inv: [N,4,3]
-        P_inv = torch.Tensor([[1,0,0],[0,1,0],[0,0,1],[0,0,0]]).unsqueeze(axis=0).to(device)
+        P = K[0,:3,:].unsqueeze(axis=0).to(device)
+        P_inv = torch.linalg.pinv(P)
         P_inv = P_inv.repeat(N,1,1)
 
         line_matrix = e_cross @ P_ @ P_inv
@@ -454,14 +455,14 @@ class Trainer:
                         inputs[("color", frame_id, source_scale)]
 
                 if self.opt.load_corresp:
-                    h, w = inputs[("color", frame_id, scale)].shape[2:]
+                    h, w = inputs[("color", frame_id, source_scale)].shape[2:]
                     denorm = lambda x: (x + 1) * torch.Tensor([[[w, h]]]).to(x.device) / 2
 
                     P_ = torch.matmul(inputs[("K", source_scale)], T)[:, :3, :]
                     points1 = denorm(torch.cat(correspondences[('points1', 0, frame_id)])).to(P_.device)
                     points2 = denorm(torch.cat(correspondences[('points2', 0, frame_id)])).to(P_.device)
 
-                    outputs[("epipolar_loss", frame_id, scale)] = self.compute_epipolar_loss(points1, points2, P_)
+                    outputs[("epipolar_loss", frame_id, scale)] = self.compute_epipolar_loss(points1, points2, P_, inputs[("K", source_scale)])
 
     def compute_reprojection_loss(self, pred, target):
         """Computes reprojection loss between a batch of predicted and target images
@@ -563,8 +564,7 @@ class Trainer:
 
             if self.opt.load_corresp:
                 loss += outputs[("epipolar_loss", frame_id, scale)]
-                # print("epipolar loss", outputs[("epipolar_loss", frame_id, source_scale)] )
-                losses["loss/epipolar_loss_{}".format(scale)] = outputs[("epipolar_loss", frame_id, source_scale)]
+                losses["loss/epipolar_loss_{}".format(scale)] = outputs[("epipolar_loss", frame_id, scale)]
 
             loss += self.opt.disparity_smoothness * smooth_loss / (2 ** scale)
             # print("disparity smooth loss", self.opt.disparity_smoothness * smooth_loss / (2 ** scale))
@@ -719,11 +719,11 @@ class Trainer:
             print("Cannot find Adam weights so Adam is randomly initialized")
 
     def get_magma_heatmap(self, disp):
-        img = np.array(transforms.ToPILImage(disp.detach()))
+        img = np.array(transforms.ToPILImage()(disp.detach()))
         vmax = np.percentile(img, 95)
         normalizer = mpl.colors.Normalize(vmin=img.min(), vmax=vmax)
         mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
         colormapped_im = (mapper.to_rgba(img)[:, :, :3] * 255).astype(np.uint8)
         im = pil.fromarray(colormapped_im)
 
-        return im
+        return transforms.ToTensor()(im)

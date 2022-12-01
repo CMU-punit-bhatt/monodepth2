@@ -144,6 +144,7 @@ def test_simple(args):
             if args.pred_metric_depth:
                 name_dest_npy = os.path.join(output_directory, "{}_depth.npy".format(output_name))
                 metric_depth = STEREO_SCALE_FACTOR * depth.cpu().numpy()
+                metric_depth = np.uint16(metric_depth * 256)
                 np.save(name_dest_npy, metric_depth)
             else:
                 name_dest_npy = os.path.join(output_directory, "{}_disp.npy".format(output_name))
