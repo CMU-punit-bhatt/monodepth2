@@ -357,7 +357,7 @@ class Trainer:
         assert points.shape[-1] == 3 , "Please provide homogeneous coordinates"
 
         dot_prod = torch.sum(points * lines, dim = -1, keepdim = True)
-        distance = dot_prod/torch.linalg.norm(lines, dim = -1, keepdim = True)
+        distance = dot_prod/torch.linalg.norm(lines[...,:2], dim = -1, keepdim = True)
 
         return abs(distance)
 
