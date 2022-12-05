@@ -4,39 +4,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
-def get_sift_corresp(img1, img2):
-
-    h, w = img1.shape[0], img2.shape[1]
-
-    sift = cv2.SIFT_create()
-    kp1, des1 = sift.detectAndCompute(img1,None)
-    kp2, des2 = sift.detectAndCompute(img2,None)
-
-    bf = cv2.BFMatcher()
-    matches = bf.knnMatch(des1, des2, k=2)
-
-    # Apply ratio test
-    good = []
-
-    for m,n in matches:
-        if m.distance < 0.75*n.distance:
-            good.append(m)
-
-    # Sorting by distance.
-    good.sort(key=lambda x: x.distance)
-
-    # Which one is query and which one is train.
-    # https://github.com/opencv/opencv/blob/4.x/modules/features2d/src/draw.cpp#L239
-    points1 = np.asarray([kp1[match.queryIdx].pt for match in good])
-    points2 = np.asarray([kp2[match.trainIdx].pt for match in good])
-
-    # # Normalize values
-    # min_max = lambda x: 2 * x / np.array([[w, h]]) - 1
-
-    # norm_points1 = min_max(points1)
-    # norm_points2 = min_max(points2)
-
-    return points1, points2
+from correspondences.superpoint_matcher import SuperPointMatcher
+from correspondences.sift_matcher import SIFTMatcher
 
 def draw_line(img, pts, color, thickness=3):
     cv2.line(
@@ -102,8 +71,10 @@ def main(args):
     img_prev = cv2.cvtColor(orig_img_prev, cv2.COLOR_RGB2GRAY)
     img_next = cv2.cvtColor(orig_img_next, cv2.COLOR_RGB2GRAY)
 
-    corresp_prev_t = get_sift_corresp(img_prev, img_t)
-    corresp_t_next = get_sift_corresp(img_t, img_next)
+    matcher = SIFTMatcher() if args.matcher == 'sift' else SuperPointMatcher()
+
+    corresp_prev_t = matcher.get_correspondences(img_prev, img_t)
+    corresp_t_next = matcher.get_correspondences(img_t, img_next)
 
     combined_img = draw_three_corresp(
         orig_img_prev,
@@ -150,8 +121,13 @@ if __name__ == '__main__':
         type=int,
         default=5
     )
+    parser.add_argument(
+        '--matcher',
+        help="Defines the correspondence generator to use.",
+        type=str,
+        choices=['sift', 'superpoint'],
+        default='sift',
+    )
     args = parser.parse_args()
-
-    os.makedirs(args.out_path, exist_ok=True)
 
     main(args)

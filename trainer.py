@@ -133,7 +133,7 @@ class Trainer:
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
             self.opt.frame_ids, 4, is_train=True, img_ext=img_ext,
             load_corresp=self.opt.load_corresp, corresp_cache_path=self.opt.corresp_cache_path,
-            corresp_n=self.opt.corresp_n)
+            corresp_n=self.opt.corresp_n, corresp_type=self.opt.corresp_type)
         self.train_loader = DataLoader(
             train_dataset, self.opt.batch_size, True,
             num_workers=self.opt.num_workers, pin_memory=True, drop_last=True,
@@ -142,7 +142,7 @@ class Trainer:
             self.opt.data_path, val_filenames, self.opt.height, self.opt.width,
             self.opt.frame_ids, 4, is_train=False, img_ext=img_ext,
             load_corresp=self.opt.load_corresp, corresp_cache_path=self.opt.corresp_cache_path,
-            corresp_n=self.opt.corresp_n)
+            corresp_n=self.opt.corresp_n, corresp_type=self.opt.corresp_type)
         self.val_loader = DataLoader(
             val_dataset, self.opt.batch_size, True,
             num_workers=self.opt.num_workers, pin_memory=True, drop_last=True,

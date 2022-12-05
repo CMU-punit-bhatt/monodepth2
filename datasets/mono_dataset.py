@@ -18,6 +18,8 @@ from torchvision import transforms
 from torch.utils.data.dataloader  import default_collate
 
 from caching_dictionary import CachingDictionary
+from correspondences.sift_matcher import SIFTMatcher
+from correspondences.superpoint_matcher import SuperPointMatcher
 
 def pil_loader(path):
     # open path as file to avoid ResourceWarning
@@ -75,7 +77,8 @@ class MonoDataset(data.Dataset):
                  img_ext='.jpg',
                  load_corresp=False,
                  corresp_cache_path=None,
-                 corresp_n=-1):
+                 corresp_n=-1,
+                 corresp_type='sift'):
         super(MonoDataset, self).__init__()
 
         self.data_path = data_path
@@ -94,10 +97,20 @@ class MonoDataset(data.Dataset):
         self.to_tensor = transforms.ToTensor()
         self.to_image = transforms.ToPILImage()
 
-        # Adding SIFT feature information.
+        # Adding correspondences related information.
         self.load_corresp = load_corresp
         self.corresp_cache_path = corresp_cache_path
         self.corresp_n = corresp_n
+        self.corresp_type = corresp_type
+
+        if self.corresp_type == 'sift':
+            self.matcher = SIFTMatcher()
+        elif self.corresp_type == 'superpoint':
+            self.matcher = SuperPointMatcher()
+        elif self.corresp_type == 'none':
+            self.matcher = None
+        else:
+            raise NotImplementedError
 
         assert not load_corresp or corresp_cache_path is not None, 'Please improve!'
 
@@ -235,8 +248,8 @@ class MonoDataset(data.Dataset):
             image_t_prev = self.to_image(inputs[("color", -1, 0)])
             image_t_next = self.to_image(inputs[("color", 1, 0)])
 
-            key1 = (sync_file, frame_index - 1, frame_index)
-            key2 = (sync_file, frame_index, frame_index + 1)
+            key1 = (self.corresp_type, sync_file, frame_index - 1, frame_index)
+            key2 = (self.corresp_type, sync_file, frame_index, frame_index + 1)
 
             corresp_prev_t = self.corresp_dict.try_get(key1, image_t_prev, image_t)
             corresp_t_next = self.corresp_dict.try_get(key2, image_t, image_t_next)
