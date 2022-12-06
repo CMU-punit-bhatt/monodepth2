@@ -83,7 +83,7 @@ class MonodepthOptions:
                                  help="frames to load",
                                  default=[0, -1, 1])
 
-        # DATA options
+        # CORRESPONDENCES options
         self.parser.add_argument("--load-corresp",
                                  help="if true, passes correspondences per batch.",
                                  action="store_true")
@@ -94,7 +94,12 @@ class MonodepthOptions:
         self.parser.add_argument("--corresp_cache_path",
                                  type=str,
                                  help="File path to store/load correspondences data.",
-                                 default=os.path.join(file_dir, 'kitti_corresp'))
+                                 default=os.path.join(file_dir, 'kitti_corresp_cache'))
+        self.parser.add_argument("--corresp_type",
+                                 type=str,
+                                 choices=['sift', 'superpoint', 'none'],
+                                 help="Correspondence matcher to use. Defaults to none.",
+                                 default='none')
 
         # OPTIMIZATION options
         self.parser.add_argument("--batch_size",

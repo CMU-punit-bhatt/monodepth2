@@ -37,5 +37,5 @@ class CachingDictionary:
     def get_file_path(self, key):
         return os.path.join(
             self.dir_path,
-            'cache_' + '_'.join([str(i) for i in key]) + self.ext
+            '_'.join([str(i) for i in key]) + self.ext
         )

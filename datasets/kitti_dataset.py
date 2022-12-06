@@ -93,27 +93,7 @@ class KITTIRAWDataset(KITTIDataset):
 
         h, w = img1.shape[0], img2.shape[1]
 
-        sift = cv2.SIFT_create()
-        kp1, des1 = sift.detectAndCompute(img1,None)
-        kp2, des2 = sift.detectAndCompute(img2,None)
-
-        bf = cv2.BFMatcher()
-        matches = bf.knnMatch(des1, des2, k=2)
-
-        # Apply ratio test
-        good = []
-
-        for m,n in matches:
-            if m.distance < 0.75*n.distance:
-                good.append(m)
-
-        # Sorting by distance.
-        good.sort(key=lambda x: x.distance)
-
-        # Which one is query and which one is train.
-        # https://github.com/opencv/opencv/blob/4.x/modules/features2d/src/draw.cpp#L239
-        points1 = np.asarray([kp1[match.queryIdx].pt for match in good])
-        points2 = np.asarray([kp2[match.trainIdx].pt for match in good])
+        points1, points2 = self.matcher.get_correspondences(img1, img2)
 
         # Normalize values
         min_max = lambda x: 2 * x / np.array([[w, h]]) - 1
