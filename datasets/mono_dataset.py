@@ -53,7 +53,7 @@ class MonoDataset(data.Dataset):
                 del inp[k]
 
         # create equal sized batch
-        min_corresp = 1000
+        min_corresp = 10000
         dict_keys = list(corresp_dict.keys())
         for img in (0,2):
             for i in range(len(corresp_dict[dict_keys[img]])):
