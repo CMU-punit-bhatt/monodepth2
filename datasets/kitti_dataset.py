@@ -6,6 +6,7 @@
 
 from __future__ import absolute_import, division, print_function
 
+import cv2
 import os
 import skimage.transform
 import numpy as np
@@ -83,6 +84,24 @@ class KITTIRAWDataset(KITTIDataset):
             depth_gt = np.fliplr(depth_gt)
 
         return depth_gt
+
+    def load_correspondences(self, image1, image2):
+        img1 = cv2.cvtColor(np.array(image1), cv2.COLOR_RGB2GRAY)
+        img2 = cv2.cvtColor(np.array(image2), cv2.COLOR_RGB2GRAY)
+
+        assert img1.shape == img2.shape, 'Are you serious?'
+
+        h, w = img1.shape[0], img2.shape[1]
+
+        points1, points2 = self.matcher.get_correspondences(img1, img2)
+
+        # Normalize values
+        min_max = lambda x: 2 * x / np.array([[w, h]]) - 1
+
+        norm_points1 = min_max(points1)
+        norm_points2 = min_max(points2)
+
+        return norm_points1, norm_points2
 
 
 class KITTIOdomDataset(KITTIDataset):

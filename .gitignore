@@ -10,4 +10,5 @@ parallel
 parallel-20221122
 assets
 checkpoints
-kitti_corresp
+kitti_corresp*
+

@@ -14,6 +14,11 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
+from torchvision import transforms
+
+import PIL.Image as pil
+import matplotlib as mpl
+import matplotlib.cm as cm
 
 import json
 
@@ -24,7 +29,7 @@ from layers import *
 import datasets
 import networks
 from IPython import embed
-
+from datasets.kitti_dataset import MonoDataset
 
 class Trainer:
     def __init__(self, options):
@@ -126,16 +131,22 @@ class Trainer:
 
         train_dataset = self.dataset(
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext)
+            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext,
+            load_corresp=self.opt.load_corresp, corresp_cache_path=self.opt.corresp_cache_path,
+            corresp_n=self.opt.corresp_n, corresp_type=self.opt.corresp_type)
         self.train_loader = DataLoader(
             train_dataset, self.opt.batch_size, True,
-            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
+            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True,
+            collate_fn=MonoDataset.collate_corresp)
         val_dataset = self.dataset(
             self.opt.data_path, val_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext)
+            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext,
+            load_corresp=self.opt.load_corresp, corresp_cache_path=self.opt.corresp_cache_path,
+            corresp_n=self.opt.corresp_n, corresp_type=self.opt.corresp_type)
         self.val_loader = DataLoader(
             val_dataset, self.opt.batch_size, True,
-            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
+            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True,
+            collate_fn=MonoDataset.collate_corresp)
         self.val_iter = iter(self.val_loader)
 
         self.writers = {}
@@ -188,6 +199,7 @@ class Trainer:
         for self.epoch in range(self.opt.num_epochs):
             self.run_epoch()
             if (self.epoch + 1) % self.opt.save_frequency == 0:
+                print("saving model at epoch {}".format(self.epoch))
                 self.save_model()
 
     def run_epoch(self):
@@ -198,11 +210,11 @@ class Trainer:
         print("Training")
         self.set_train()
 
-        for batch_idx, inputs in enumerate(self.train_loader):
+        for batch_idx, (inputs, correspondences) in enumerate(self.train_loader):
 
             before_op_time = time.time()
 
-            outputs, losses = self.process_batch(inputs)
+            outputs, losses = self.process_batch(inputs, correspondences)
 
             self.model_optimizer.zero_grad()
             losses["loss"].backward()
@@ -211,7 +223,7 @@ class Trainer:
             duration = time.time() - before_op_time
 
             # log less frequently after the first 2000 steps to save time & disk space
-            early_phase = batch_idx % self.opt.log_frequency == 0 and self.step < 2000
+            early_phase = batch_idx % self.opt.log_frequency == 0 and self.step < 20000
             late_phase = self.step % 2000 == 0
 
             if early_phase or late_phase:
@@ -225,7 +237,7 @@ class Trainer:
 
             self.step += 1
 
-    def process_batch(self, inputs):
+    def process_batch(self, inputs, correspondences):
         """Pass a minibatch through the network and generate images and losses
         """
         for key, ipt in inputs.items():
@@ -254,7 +266,7 @@ class Trainer:
         if self.use_pose_net:
             outputs.update(self.predict_poses(inputs, features))
 
-        self.generate_images_pred(inputs, outputs)
+        self.generate_images_pred(inputs, outputs, correspondences)
         losses = self.compute_losses(inputs, outputs)
 
         return outputs, losses
@@ -322,13 +334,13 @@ class Trainer:
         """
         self.set_eval()
         try:
-            inputs = self.val_iter.next()
+            inputs, correspondences = self.val_iter.next()
         except StopIteration:
             self.val_iter = iter(self.val_loader)
-            inputs = self.val_iter.next()
+            inputs, correspondences = self.val_iter.next()
 
         with torch.no_grad():
-            outputs, losses = self.process_batch(inputs)
+            outputs, losses = self.process_batch(inputs, correspondences)
 
             if "depth_gt" in inputs:
                 self.compute_depth_losses(inputs, outputs, losses)
@@ -338,7 +350,59 @@ class Trainer:
 
         self.set_train()
 
-    def generate_images_pred(self, inputs, outputs):
+    def distance_line_point(self, points, lines):
+        """Given the line l and point x, compute the distance between x
+        and l.
+        """
+        assert points.shape[-1] == 3 , "Please provide homogeneous coordinates"
+
+        dot_prod = torch.sum(points * lines, dim = -1, keepdim = True)
+        distance = dot_prod/torch.linalg.norm(lines[...,:2], dim = -1, keepdim = True)
+
+        return abs(distance)
+
+    def compute_epipolar_loss(self, x1, x2, P_, K):
+        """Given the 2D correspondences, compute the total loss.
+        """
+        device = P_.device
+        # P_: [N, 3, 4]
+        # x1, x2: [N, P, 2]
+        N = P_.shape[0]
+        # epipole: [N, 3]
+        epipole = torch.cat([P_[:,0,3, None], P_[:,1,3, None], P_[:,2,3, None]], axis = 1)
+        n_zeros = torch.zeros([N,1]).to(device)
+        e_cross = torch.cat([
+                n_zeros, - epipole[:,2, None],
+                epipole[:,1, None],
+                epipole[:,2, None],
+                n_zeros, - epipole[:,0, None],
+                - epipole[:,1, None],
+                epipole[:,0, None],
+                n_zeros
+            ],
+            axis= 1)
+        e_cross = e_cross.reshape((-1, 3,3))
+
+        # P_inv: [N,4,3]
+        P = K[0,:3,:].unsqueeze(axis=0).to(device)
+        P_inv = torch.linalg.pinv(P)
+        P_inv = P_inv.repeat(N,1,1)
+
+        line_matrix = e_cross @ P_ @ P_inv
+
+        # homogeneous corrdinates for x2
+        num_corresp = x2.shape[1]
+        nzeros = torch.ones((N,num_corresp,1)).to(device)
+        x1 = torch.cat([x1, nzeros], axis = -1)
+        x2 = torch.cat([x2, nzeros], axis = -1)
+        lines = line_matrix @ x2.permute((0, 2, 1)).float()
+        lines = lines.permute((0, 2, 1))
+
+        loss = torch.mean(self.distance_line_point(x1, lines))
+
+        return loss
+
+    def generate_images_pred(self, inputs, outputs, correspondences):
         """Generate the warped (reprojected) color images for a minibatch.
         Generated images are saved into the `outputs` dictionary.
         """
@@ -389,6 +453,16 @@ class Trainer:
                 if not self.opt.disable_automasking:
                     outputs[("color_identity", frame_id, scale)] = \
                         inputs[("color", frame_id, source_scale)]
+
+                if self.opt.load_corresp:
+                    h, w = inputs[("color", frame_id, source_scale)].shape[2:]
+                    denorm = lambda x: (x + 1) * torch.Tensor([[[w, h]]]).to(x.device) / 2
+
+                    P_ = torch.matmul(inputs[("K", source_scale)], T)[:, :3, :]
+                    points1 = denorm(torch.cat(correspondences[('points1', 0, frame_id)])).to(P_.device)
+                    points2 = denorm(torch.cat(correspondences[('points2', 0, frame_id)])).to(P_.device)
+
+                    outputs[("epipolar_loss", frame_id, scale)] = self.compute_epipolar_loss(points1, points2, P_, inputs[("K", source_scale)])
 
     def compute_reprojection_loss(self, pred, target):
         """Computes reprojection loss between a batch of predicted and target images
@@ -457,6 +531,7 @@ class Trainer:
                 # add a loss pushing mask to 1 (using nn.BCELoss for stability)
                 weighting_loss = 0.2 * nn.BCELoss()(mask, torch.ones(mask.shape).cuda())
                 loss += weighting_loss.mean()
+                # print("weighting_loss", weighting_loss.mean())
 
             if self.opt.avg_reprojection:
                 reprojection_loss = reprojection_losses.mean(1, keepdim=True)
@@ -487,7 +562,13 @@ class Trainer:
             norm_disp = disp / (mean_disp + 1e-7)
             smooth_loss = get_smooth_loss(norm_disp, color)
 
+            if self.opt.load_corresp:
+                loss += outputs[("epipolar_loss", frame_id, scale)]
+                losses["loss/epipolar_loss_{}".format(scale)] = outputs[("epipolar_loss", frame_id, scale)]
+
             loss += self.opt.disparity_smoothness * smooth_loss / (2 ** scale)
+            # print("disparity smooth loss", self.opt.disparity_smoothness * smooth_loss / (2 ** scale))
+
             total_loss += loss
             losses["loss/{}".format(scale)] = loss
 
@@ -544,7 +625,7 @@ class Trainer:
         for l, v in losses.items():
             writer.add_scalar("{}".format(l), v, self.step)
 
-        for j in range(min(4, self.opt.batch_size)):  # write a maxmimum of four images
+        for j in range(min(10, self.opt.batch_size)):  # write a maxmimum of four images
             for s in self.opt.scales:
                 for frame_id in self.opt.frame_ids:
                     writer.add_image(
@@ -557,7 +638,15 @@ class Trainer:
 
                 writer.add_image(
                     "disp_{}/{}".format(s, j),
-                    normalize_image(outputs[("disp", s)][j]), self.step)
+                    self.get_magma_heatmap(outputs[("disp", s)][j]), self.step)
+
+                writer.add_image(
+                    "depth_{}/{}".format(s, j),
+                    normalize_image(outputs[("depth", 0, s)][j]), self.step)
+
+                writer.add_image(
+                    "depth_gt/{}".format(j),
+                    normalize_image(inputs[("depth_gt")][j]), self.step)
 
                 if self.opt.predictive_mask:
                     for f_idx, frame_id in enumerate(self.opt.frame_ids[1:]):
@@ -628,3 +717,13 @@ class Trainer:
             self.model_optimizer.load_state_dict(optimizer_dict)
         else:
             print("Cannot find Adam weights so Adam is randomly initialized")
+
+    def get_magma_heatmap(self, disp):
+        img = np.array(transforms.ToPILImage()(disp.detach()))
+        vmax = np.percentile(img, 95)
+        normalizer = mpl.colors.Normalize(vmin=img.min(), vmax=vmax)
+        mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
+        colormapped_im = (mapper.to_rgba(img)[:, :, :3] * 255).astype(np.uint8)
+        im = pil.fromarray(colormapped_im)
+
+        return transforms.ToTensor()(im)
