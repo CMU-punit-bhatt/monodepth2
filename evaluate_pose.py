@@ -56,13 +56,15 @@ def evaluate(opt):
         "eval_split should be either odom_9 or odom_10"
 
     sequence_id = int(opt.eval_split.split("_")[1])
+    img_ext = '.png' if opt.png else '.jpg'
+    device = torch.device('cpu') if opt.no_cuda else torch.device('cuda')
 
     filenames = readlines(
         os.path.join(os.path.dirname(__file__), "splits", "odom",
                      "test_files_{:02d}.txt".format(sequence_id)))
 
     dataset = KITTIOdomDataset(opt.data_path, filenames, opt.height, opt.width,
-                               [0, 1], 4, is_train=False)
+                               [0, 1], 4, img_ext=img_ext, is_train=False)
     dataloader = DataLoader(dataset, opt.batch_size, shuffle=False,
                             num_workers=opt.num_workers, pin_memory=True, drop_last=False)
 
@@ -70,14 +72,14 @@ def evaluate(opt):
     pose_decoder_path = os.path.join(opt.load_weights_folder, "pose.pth")
 
     pose_encoder = networks.ResnetEncoder(opt.num_layers, False, 2)
-    pose_encoder.load_state_dict(torch.load(pose_encoder_path))
+    pose_encoder.load_state_dict(torch.load(pose_encoder_path, map_location=device))
 
     pose_decoder = networks.PoseDecoder(pose_encoder.num_ch_enc, 1, 2)
-    pose_decoder.load_state_dict(torch.load(pose_decoder_path))
+    pose_decoder.load_state_dict(torch.load(pose_decoder_path, map_location=device))
 
-    pose_encoder.cuda()
+    pose_encoder.to(device)
     pose_encoder.eval()
-    pose_decoder.cuda()
+    pose_decoder.to(device)
     pose_decoder.eval()
 
     pred_poses = []
@@ -89,8 +91,7 @@ def evaluate(opt):
     with torch.no_grad():
         for inputs in dataloader:
             for key, ipt in inputs.items():
-                inputs[key] = ipt.cuda()
-
+                inputs[key] = ipt.to(device)
             all_color_aug = torch.cat([inputs[("color_aug", i, 0)] for i in opt.frame_ids], 1)
 
             features = [pose_encoder(all_color_aug)]
@@ -113,8 +114,19 @@ def evaluate(opt):
         gt_local_poses.append(
             np.linalg.inv(np.dot(np.linalg.inv(gt_global_poses[i - 1]), gt_global_poses[i])))
 
+    # Removing invalid indices that cannot be predicted ########################
+    invalid_indices = []
+
+    print('Before pop:', len(gt_local_poses), pred_poses.shape)
+
+    for i in invalid_indices:
+        gt_local_poses.pop(i)
+
+    print('After pop:', len(gt_local_poses), pred_poses.shape)
+    ############################################################################
+
     ates = []
-    num_frames = gt_xyzs.shape[0]
+    num_frames = len(gt_local_poses)
     track_length = 5
     for i in range(0, num_frames - 1):
         local_xyzs = np.array(dump_xyz(pred_poses[i:i + track_length - 1]))
